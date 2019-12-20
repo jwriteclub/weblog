@@ -1,0 +1,249 @@
+// Weblog
+//
+//    Copyright 2019 Christopher O'Connell
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// For any questions, please contact jwriteclub@gmail.com
+//
+// logselect.peg: PEG grammar for the parser
+
+{
+
+package predicate
+
+}
+
+Stmt ⟵ Bool
+
+Bool ⟵ BoolOr / BoolNot / EmptyString
+
+Comparison ⟵ left:Value Whitespace? op:CompareOp Whitespace? right:Value {
+    fmt.Printf("cmp:left %s\n", left)
+    fmt.Printf("cmp:op %s\n", op)
+    fmt.Printf("cmp:right %s\n", right)
+    cmp := op.(string)
+    switch cmp {
+    case "==":
+        return OpEquals{left.(Valueable), right.(Valueable)}, nil
+    case "!=":
+        return OpNot{OpEquals{left.(Valueable), right.(Valueable)}}, nil
+    case ">=":
+        return OpOr{OpEquals{left.(Valueable), right.(Valueable)}, OpGreater{left.(Valueable), right.(Valueable)}}, nil
+    case "<=":
+        return OpOr{OpEquals{left.(Valueable), right.(Valueable)}, OpLess{left.(Valueable), right.(Valueable)}}, nil
+    case ">":
+        return OpGreater{left.(Valueable), right.(Valueable)}, nil
+    case "<":
+        return OpLess{left.(Valueable), right.(Valueable)}, nil
+    default:
+        return nil, errors.New("invalid comparison operator")
+    }
+}
+CompareOp ⟵ ("==" / "!=" / ">=" / "<=" / ">" / "<") {
+    return string(c.text), nil
+}
+
+// A complete boolean statement. Parse || first, so that and has tighter
+// binding
+BoolOr ⟵ left:BoolAnd rest:(Whitespace "||" Whitespace BoolAnd)* {
+    fmt.Printf("||left %#v\n", left)
+    fmt.Printf("||rest %#v\n", rest)
+    arr := rest.([]interface{})
+    if len(arr) == 0 {
+        return left, nil
+    }
+    var ops []BoolOp
+    for _,val  := range arr {
+        fmt.Printf("||Found %#v\n", val)
+        ops = append(ops, val.([]interface{})[3].(BoolOp))
+    }
+    lo := len(ops)
+    // If the input list is empty, we'd return before creating ops, so we can be sure there's no nil slice problem
+    //noinspection ALL
+    curr := ops[lo - 1]
+    for i := lo - 2; i >= 0; i -= 1 {
+        //noinspection ALL
+        curr = OpOr{ops[i], curr}
+    }
+    return OpOr{left.(BoolOp), curr}, nil
+}
+// Perform left associative and. Because this is parsed as a sub-tree
+// of BoolOr, it results in a higher precedence
+BoolAnd ⟵ left:Factor rest:(Whitespace "&&" Whitespace right:Factor)* {
+    fmt.Printf("&&left %#v\n", left)
+    fmt.Printf("&&rest %#v\n", rest)
+    arr := rest.([]interface{})
+    if len(arr) == 0 {
+        return left, nil
+    }
+    var ops []BoolOp
+    for _,val := range arr {
+        fmt.Printf("&&Found %#v\n", val)
+        ops = append(ops, val.([]interface{})[3].(BoolOp))
+    }
+    fmt.Printf("||ops %#v\n", ops)
+    lo := len(ops)
+    // If the input list is empty, we'd return before creating ops, so we can be sure there's no nil slice problem
+    //noinspection ALL
+    curr := ops[lo - 1]
+    for i := lo - 2; i >= 0; i -= 1 {
+        //noinspection ALL
+        curr = OpAnd{ops[i], curr}
+    }
+    return OpAnd{left.(BoolOp), curr}, nil
+}
+BoolNot ⟵ "!" fct:Factor {
+    return OpNot{fct.(BoolOp)}, nil
+}
+// A final component of the && || chain. Either an OpBool or a complete substatement
+Factor ⟵ "(" val:Bool ")" {
+    return val.(BoolOp), nil
+} / OpBool / BoolNot / Comparison
+
+
+OpVal ⟵ OpNameField "(" idt:(Ident / String) ")" {
+    return OpField{idt.(string)}, nil
+}
+// Boolean operators. These single use functions implicityly produce true or false
+// but do _not_ return true or false (they cannot be compared)
+OpBool ⟵ nme:(OpNamePrefix / OpNameHasField) "(" idt:(Ident / String) ")" {
+    fmt.Printf("Op Bool raw %#v-> %s\n", nme, reflect.TypeOf(nme).String())
+    fmt.Printf("Op bool idt %#v -> %s\n", idt, reflect.TypeOf(idt).String())
+
+    switch nme.(string) {
+        case "prefix":
+            return OpPrefix{idt.(string)}, nil
+        case "hasfield":
+            return OpHasField{idt.(string)}, nil
+    }
+
+    return nil, errors.New("invalid operation")
+}
+OpNameHasField ⟵ "HasField"i {
+    return "hasfield", nil
+}
+OpNamePrefix ⟵ "Prefix"i {
+    return "prefix", nil
+}
+OpNameField ⟵ "Field"i {
+    return "field", nil
+}
+
+// A generic value. Corresponds to the Valuable{} interface
+// Generally, things that may be compared using CompareOp
+Value ⟵ OpVal / NumberVal / LogLevel / LiteralVal / StringVal
+
+// Get true, false and nil
+LiteralVal ⟵ LVTrue / LVFalse / LVNull / LVNil
+LVTrue ⟵ "true"i {
+    return Val{typ: ValTypeBool, bl: true}, nil
+}
+LVFalse ⟵ "false"i {
+    return Val{typ: ValTypeBool, bl: false}, nil
+}
+LVNull ⟵ "null"i {
+    return Val{typ: ValTypeNil}, nil
+}
+LVNil ⟵ "nil"i {
+    return Val{typ: ValTypeNil}, nil
+}
+
+// We provide special keywords for log levels and implicitly return
+// a Valuable{} object containing the log level (so it may be directly compared
+// against numeric values)
+LogLevel ⟵ ("panic"i / "fatal"i / "error"i / "warn"i / "warning"i / "info"i / "debug"i) {
+    fmt.Printf("Log Level %s\n", c.text)
+    return newLogLevel(string(c.text))
+}
+
+// We include a Val{} form of strings
+StringVal ⟵ str:(Ident / String) {
+    return Val{typ: ValTypeString, str: str.(string)}, nil
+}
+
+// We introduce a special ident class for unquoted strings
+// (but with a more restrictive syntax that quoted strings)
+Ident ⟵ [a-zA-Z][a-zA-Z0-9-_]* {
+    return string(c.text), nil
+}
+
+// We handle quoted strings using PHP style ' or " characters, and unquoting
+// as required
+String ⟵ DoubleString / SingleString
+SingleString ⟵ SingleQuote chr:( !SingleEscapedChar . / '\\' SingleEscapeSequence )* SingleQuote {
+    _ = chr // Quiet inspection
+    return strunquote(string(c.text))
+}
+SingleEscapedChar ⟵ [\x00-\x1f'\\]
+SingleEscapeSequence ⟵ SingleCharEscape / UnicodeEscape
+SingleCharEscape ⟵ ['bfnrt]
+SingleQuote ⟵ "'"
+DoubleString ⟵ DoubleQuote ( !DoubleEscapedChar . / '\\' DoubleEscapeSequence )* DoubleQuote {
+    return strunquote(string(c.text))
+}
+DoubleEscapedChar ⟵ [\x00-\x1f"\\]
+DoubleEscapeSequence ⟵ DoubleCharEscape / UnicodeEscape
+DoubleCharEscape ⟵ ["bfnrt]
+DoubleQuote ⟵ "\""
+Whitespace ⟵ [\t\n\v\f\r ]+ {
+    return " ", nil
+}
+UnicodeEscape ⟵ 'u' HexDigit HexDigit HexDigit HexDigit
+HexDigit ⟵ [0-9a-f]i
+
+// We create a type incorporating numbers into
+// a Val{} struct for usage in more complext constructs
+NumberVal ⟵ ZeroErr / FloatVal / IntegerVal
+FloatVal ⟵ flt:Float {
+    return Val{typ: ValTypeFloat, flt: flt.(float64)}, nil
+}
+IntegerVal ⟵ itg:(Integer / ZeroVal) {
+    return Val{typ: ValTypeInt, itg: itg.(int64)}, nil
+}
+
+// We parse out the typical numeric types, including
+// erroring on -0, etc.
+Number ⟵ ZeroErr / Float / Integer / ZeroVal
+Float ⟵ Neg? Flt {
+    fmt.Printf("Float capturing '%s'\n", c.text)
+    return strconv.ParseFloat(string(c.text), 64)
+}
+Integer ⟵ Neg? Int {
+    fmt.Printf("Integer capturing\n")
+    return strconv.ParseInt(string(c.text), 10, 64)
+}
+Flt ⟵ Int Dot Int / Int Dot ZeroStr / ZeroStr Dot Int / ZeroStr Dot / Int Dot {
+    fmt.Printf("Flt capturing\n")
+    return strconv.ParseFloat(string(c.text), 64)
+}
+Int ⟵ [1-9][0-9]* {
+    fmt.Printf("Int capturing\n")
+    return c.text, nil
+}
+ZeroStr ⟵ "0" {
+    return "0", nil
+}
+ZeroVal ⟵ "0" {
+    return int64(0), nil
+}
+ZeroErr ⟵ Neg? "0.0" {
+    return nil, errors.New("invalid 0.0")
+}
+Dot ⟵ "."
+Neg ⟵ "-"
+
+EmptyString ⟵ "" {
+    return OpTrue{}, nil
+}
+EOF ⟵ !.
